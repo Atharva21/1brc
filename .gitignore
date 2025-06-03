@@ -9,6 +9,9 @@ bin/
 *.so
 *.dylib
 
+# temprature dataset
+dataset/
+
 # Test binary, built with `go test -c`
 *.test
 
