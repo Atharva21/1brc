@@ -8,14 +8,17 @@ run: build
 	@ ./bin/${BINARY_NAME}
 
 clean:
-	go clean
-	rm -rf ./bin/*
+	@ go clean
+	@ rm -rf ./bin/*
 
 test:
-	go test ./...
+	@ go test ./...
 
 tidy:
-	go mod tidy
+	@ go mod tidy
+
+fmt:
+	@ go fmt ./...
 
 help:
 	@ echo "Available commands:"
@@ -24,6 +27,7 @@ help:
 	@ echo "  make clean   - Clean build artifacts"
 	@ echo "  make test    - Run tests"
 	@ echo "  make tidy    - Tidy go.mod and go.sum files"
+	@ echo "  make fmt     - Format .go files
 	@ echo "  make help    - Show this help message"
 
 .PHONY: build run clean test tidy help
