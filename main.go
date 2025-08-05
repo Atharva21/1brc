@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,13 +26,23 @@ func check(err error) {
 	}
 }
 
+// const (
+// 	FNAME    = "m2.txt"
+// 	BUFFSIZE = 10 * BYTE
+// )
+
+const (
+	FNAME    = "measurements.txt"
+	BUFFSIZE = 1 * MEGABYTE
+)
+
 var linesProcessed uint64 = 0
 
 func main() {
 	workingDir, err := os.Getwd()
 	check(err)
-	tempraturesFileName := filepath.Join(workingDir, "dataset", "m2.txt")
-	// tempraturesFileName := filepath.Join(workingDir, "dataset", "measurements.txt")
+	// tempraturesFileName := filepath.Join(workingDir, "dataset", "m2.txt")
+	tempraturesFileName := filepath.Join(workingDir, "dataset", FNAME)
 	fileInfo, err := os.Stat(tempraturesFileName)
 	check(err)
 	file, err := os.Open(tempraturesFileName)
@@ -62,7 +73,7 @@ func main() {
 	}
 	wg.Wait()
 	fmt.Printf("Time taken: %v\n", time.Since(startTime))
-	// fmt.Printf("total lines processed: %v\n", linesProcessed)
+	fmt.Printf("total lines processed: %v\n", linesProcessed)
 }
 
 func getChunkBoundaries(totalsize int64, numChunks int) [][2]int64 {
@@ -131,7 +142,7 @@ func worker(filename string, chunkstart, chunkend int64, wg *sync.WaitGroup) {
 		R: file,
 		N: chunkend - chunkstart,
 	}
-	buffer := make([]byte, 10*BYTE)
+	buffer := make([]byte, BUFFSIZE)
 	// buffer := make([]byte, 1*MEGABYTE)
 	leftover := []byte{}
 	for {
@@ -158,6 +169,9 @@ func worker(filename string, chunkstart, chunkend int64, wg *sync.WaitGroup) {
 			check(err)
 		}
 	}
+	if len(leftover) > 0 {
+		processBytes(leftover)
+	}
 }
 
 func processBytes(data []byte) {
@@ -166,7 +180,7 @@ func processBytes(data []byte) {
 		if len(line) == 0 {
 			continue
 		}
-		fmt.Println(string(line))
-		// atomic.AddUint64(&linesProcessed, uint64(1))
+		// fmt.Println(string(line))
+		atomic.AddUint64(&linesProcessed, uint64(1))
 	}
 }
