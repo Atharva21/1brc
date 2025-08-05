@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -33,15 +32,25 @@ func check(err error) {
 
 const (
 	FNAME    = "measurements.txt"
-	BUFFSIZE = 1 * MEGABYTE
+	BUFFSIZE = 10 * MEGABYTE
 )
 
 var linesProcessed uint64 = 0
 
+type CityTemp struct {
+	Temp  int64
+	Count int64
+	Mean  float64
+}
+
+type Result struct {
+	mu *sync.RWMutex
+	mp map[string]*CityTemp
+}
+
 func main() {
 	workingDir, err := os.Getwd()
 	check(err)
-	// tempraturesFileName := filepath.Join(workingDir, "dataset", "m2.txt")
 	tempraturesFileName := filepath.Join(workingDir, "dataset", FNAME)
 	fileInfo, err := os.Stat(tempraturesFileName)
 	check(err)
@@ -49,10 +58,11 @@ func main() {
 	check(err)
 	defer file.Close()
 	totalSizeInBytes := fileInfo.Size()
-	numCores := runtime.NumCPU()
-	fmt.Printf("File size: %+v, total cores: %v\n", totalSizeInBytes, numCores)
+	numWorkers := runtime.NumCPU()
+	// numWorkers = 8
+	fmt.Printf("File size: %+v, total workers: %v, readbuf per worker: %v\n", totalSizeInBytes, numWorkers, BUFFSIZE)
 	// boundaries := getChunkBoundaries(20, 3)
-	boundaries := getChunkBoundaries(totalSizeInBytes, numCores)
+	boundaries := getChunkBoundaries(totalSizeInBytes, numWorkers)
 	boundaries = adjustChunkBoundaries(boundaries, file)
 	// var sum int64 = 0
 	// for _, b := range boundaries {
@@ -62,18 +72,45 @@ func main() {
 	// fmt.Printf("Total bytes: %v\n", sum)
 	startTime := time.Now()
 	wg := &sync.WaitGroup{}
+	result := &Result{
+		mu: &sync.RWMutex{},
+		mp: make(map[string]*CityTemp),
+	}
 	for _, b := range boundaries {
 		wg.Add(1)
-		go worker(
-			tempraturesFileName,
-			b[0],
-			b[1],
-			wg,
-		)
+		go func() {
+			defer wg.Done()
+			mp := worker(
+				tempraturesFileName,
+				b[0],
+				b[1],
+			)
+			for city, values := range mp {
+				result.mu.Lock()
+				cur, ok := result.mp[city]
+				if !ok {
+					result.mp[city] = values
+					result.mu.Unlock()
+					continue
+				}
+				cur.Temp += values.Temp
+				cur.Count += values.Count
+				result.mu.Unlock()
+			}
+		}()
 	}
+
 	wg.Wait()
+
+	for _, value := range result.mp {
+		value.Mean = float64(value.Temp) / (10 * float64(value.Count))
+	}
+
 	fmt.Printf("Time taken: %v\n", time.Since(startTime))
-	fmt.Printf("total lines processed: %v\n", linesProcessed)
+	// for city, value := range result.mp {
+	// 	fmt.Printf("City: %s, Mean Temperature: %.2f\n", city, value.Mean)
+	// }
+	// fmt.Printf("total lines processed: %v\n", linesProcessed)
 }
 
 func getChunkBoundaries(totalsize int64, numChunks int) [][2]int64 {
@@ -132,8 +169,7 @@ func adjustChunkBoundaries(boundaries [][2]int64, file *os.File) [][2]int64 {
 	return adjusted
 }
 
-func worker(filename string, chunkstart, chunkend int64, wg *sync.WaitGroup) {
-	defer wg.Done()
+func worker(filename string, chunkstart, chunkend int64) map[string]*CityTemp {
 	file, err := os.Open(filename)
 	check(err)
 	defer file.Close()
@@ -143,8 +179,58 @@ func worker(filename string, chunkstart, chunkend int64, wg *sync.WaitGroup) {
 		N: chunkend - chunkstart,
 	}
 	buffer := make([]byte, BUFFSIZE)
-	// buffer := make([]byte, 1*MEGABYTE)
 	leftover := []byte{}
+	mp := make(map[string]*CityTemp)
+
+	processBytes := func(data []byte) {
+		lines := bytes.Split(data, []byte{'\n'})
+		for _, line := range lines {
+			if len(line) == 0 {
+				continue
+			}
+			// temprature formats:
+			// XX.X, X.X, -XX.X, -X.X
+			end := len(line)
+			idx := -1
+			negative := false
+			for i := end - 4; i > end-7; i-- {
+				if line[i] == '-' {
+					negative = true
+					continue
+				}
+				if line[i] == ';' {
+					idx = i
+					break
+				}
+			}
+			if idx == -1 {
+				panic("line without ';' found: " + string(line))
+			}
+			cityName := string(line[:idx])
+			var temperature int64 = 0
+			temperature += int64(line[end-1] - '0')
+			temperature += int64((line[end-3] - '0') * 10)
+			if line[end-4] >= '0' && line[end-4] <= '9' {
+				temperature += int64((line[end-4] - '0') * 100)
+			}
+			if negative {
+				temperature = temperature * -1
+			}
+			// fmt.Printf("City: %s, Temp: %d\n", cityName, temperature)
+			cur, ok := mp[cityName]
+			if !ok {
+				cur = &CityTemp{
+					Temp:  temperature,
+					Count: 1,
+				}
+				mp[cityName] = cur
+				continue
+			}
+			cur.Temp += temperature
+			cur.Count++
+		}
+	}
+
 	for {
 		bytesRead, err := reader.Read(buffer)
 		if bytesRead == 0 {
@@ -172,15 +258,6 @@ func worker(filename string, chunkstart, chunkend int64, wg *sync.WaitGroup) {
 	if len(leftover) > 0 {
 		processBytes(leftover)
 	}
-}
 
-func processBytes(data []byte) {
-	lines := bytes.Split(data, []byte{'\n'})
-	for _, line := range lines {
-		if len(line) == 0 {
-			continue
-		}
-		// fmt.Println(string(line))
-		atomic.AddUint64(&linesProcessed, uint64(1))
-	}
+	return mp
 }
